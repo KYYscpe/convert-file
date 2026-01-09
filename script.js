@@ -1,5 +1,5 @@
 import { FFmpeg } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js";
-import { fetchFile, toBlobURL } from "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js";
+import { fetchFile } from "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js";
 
 /* ===================== DOM ===================== */
 const dropzone = document.getElementById("dropzone");
@@ -19,78 +19,55 @@ const ffmpegHint = document.getElementById("ffmpegHint");
 quality.addEventListener("input", () => (qualityVal.textContent = quality.value));
 
 /* ===================== CONFIG ===================== */
-// Limit: 1GB per file
-const MAX_FILE_BYTES = 1024 * 1024 * 1024;
+const MAX_FILE_BYTES = 1024 * 1024 * 1024; // 1GB per file
 
-// FFmpeg assets (Wajib paling stabil di Vercel = local same-origin)
-const LOCAL = {
+// WAJIB: taruh file ini di ROOT /public (same-origin)
+const LOCAL_ASSETS = {
   classWorkerURL: "/ffmpeg-worker.js",
   coreURL: "/ffmpeg-core.js",
   wasmURL: "/ffmpeg-core.wasm",
-  workerURL: "/ffmpeg-core.worker.js", // optional
 };
 
-// CDN fallback (di-blob agar Worker tidak cross-origin)
-const CDN = {
-  ffmpegPkgBase: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm",
-  coreBaseUmd: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd",
-};
+// List deteksi ekstensi (sesuai permintaan kamu)
+const IMG_EXT = new Set(["bmp","eps","gif","ico","jpeg","jpg","odd","png","psd","svg","tga","tiff","webp"]);
+const DOC_EXT = new Set(["doc","docx","pdf","ps","text","txt","word"]);
+const VID_EXT = new Set(["3gp","avi","flv","mkv","mov","mp4","ogv","webm","wmv"]);
+const AUD_EXT = new Set(["aac","aiff","alac","amr","flac","m4a","mp3","ogg","wav"]);
 
-// Lists yang kamu minta (deteksi)
-const IMG_EXT = new Set([
-  "bmp","eps","gif","ico","jpeg","jpg","odd","png","psd","svg","tga","tiff","webp"
-]);
-
-const DOC_EXT = new Set([
-  "doc","docx","pdf","ps","text","txt","word"
-]);
-
-const VID_EXT = new Set([
-  "3gp","avi","flv","mkv","mov","mp4","ogv","webm","wmv"
-]);
-
-const AUD_EXT = new Set([
-  "aac","aiff","alac","amr","flac","m4a","mp3","ogg","wav"
-]);
-
-// Output options (yang masuk akal client-side)
+// Output yang benar-benar realistis di browser (client-side)
 const OUTPUTS = {
   image: [
-    { value: "png", label: "PNG" },
-    { value: "jpg", label: "JPG" },
+    { value: "png",  label: "PNG" },
+    { value: "jpg",  label: "JPG" },
     { value: "webp", label: "WebP" },
-    { value: "gif", label: "GIF" },
-    { value: "bmp", label: "BMP" },
+    { value: "gif",  label: "GIF" },
+    { value: "bmp",  label: "BMP" },
     { value: "tiff", label: "TIFF" },
-    { value: "tga", label: "TGA" },
-    // NOTE: SVG output dari raster itu tidak “convert” beneran (vectorize), jadi tidak disediakan.
-    // ICO output sering butuh multi-size; disediakan "ico" tetap best-effort
-    { value: "ico", label: "ICO (best-effort)" },
+    { value: "tga",  label: "TGA" },
+    { value: "ico",  label: "ICO (best-effort)" },
   ],
   video: [
-    // Fokus percepat: video -> audio
-    { value: "mp3", label: "MP3 (fast 128k)" },
-    { value: "wav", label: "WAV" },
-    { value: "ogg", label: "OGG (Opus/Vorbis)" },
+    { value: "mp3",  label: "MP3 (auto fallback jika encoder tidak ada)" },
+    { value: "wav",  label: "WAV" },
+    { value: "m4a",  label: "M4A (AAC)" },
+    { value: "ogg",  label: "OGG (Opus/Vorbis)" },
     { value: "flac", label: "FLAC" },
-    { value: "m4a", label: "M4A (AAC)" },
     { value: "alac", label: "ALAC (M4A)" },
     { value: "aiff", label: "AIFF" },
-    { value: "amr", label: "AMR (best-effort)" },
+    { value: "amr",  label: "AMR (best-effort)" },
   ],
   audio: [
-    { value: "mp3", label: "MP3 (fast 128k)" },
-    { value: "wav", label: "WAV" },
-    { value: "ogg", label: "OGG (Opus/Vorbis)" },
+    { value: "mp3",  label: "MP3 (auto fallback jika encoder tidak ada)" },
+    { value: "wav",  label: "WAV" },
+    { value: "m4a",  label: "M4A (AAC)" },
+    { value: "ogg",  label: "OGG (Opus/Vorbis)" },
     { value: "flac", label: "FLAC" },
-    { value: "m4a", label: "M4A (AAC)" },
     { value: "alac", label: "ALAC (M4A)" },
     { value: "aiff", label: "AIFF" },
-    { value: "amr", label: "AMR (best-effort)" },
+    { value: "amr",  label: "AMR (best-effort)" },
   ],
   doc: [
-    // yang bisa benar-benar tanpa server:
-    { value: "txt", label: "TXT (copy/download saja)" },
+    { value: "txt", label: "TXT (hanya simpan ulang isi)" },
   ],
 };
 
@@ -98,7 +75,6 @@ const OUTPUTS = {
 let queue = []; // [{file, kind}]
 let converting = false;
 
-// FFmpeg lazy
 let ffmpeg = null;
 let ffmpegLoaded = false;
 let ffmpegLoading = null;
@@ -150,8 +126,8 @@ function addResultCard({ outName, blob, kind, originalName, note }) {
 
   const left = document.createElement("div");
   left.innerHTML = `<div class="name">${escapeHtml(outName)}</div>
-                    <div class="meta">from: ${escapeHtml(originalName)} • ${fmtBytes(blob.size)}</div>
-                    ${note ? `<div class="meta">${escapeHtml(note)}</div>` : ""}`;
+    <div class="meta">from: ${escapeHtml(originalName)} • ${fmtBytes(blob.size)}</div>
+    ${note ? `<div class="meta">${escapeHtml(note)}</div>` : ""}`;
 
   const right = document.createElement("div");
   right.className = "meta";
@@ -198,21 +174,18 @@ function addResultCard({ outName, blob, kind, originalName, note }) {
 function detectKind(file) {
   const ext = extOf(file.name);
 
-  // based on your list
   if (IMG_EXT.has(ext)) return "image";
   if (VID_EXT.has(ext)) return "video";
   if (AUD_EXT.has(ext)) return "audio";
   if (DOC_EXT.has(ext)) return "doc";
 
-  // fallback by mime
   if (file.type.startsWith("image/")) return "image";
   if (file.type.startsWith("video/")) return "video";
   if (file.type.startsWith("audio/")) return "audio";
-
   return "unknown";
 }
 
-/* ===================== UI OPTIONS ===================== */
+/* ===================== SELECT OPTIONS ===================== */
 function setSelectOptionsForKind(kind) {
   const opts = OUTPUTS[kind] || [];
   formatSelect.innerHTML = "";
@@ -235,11 +208,17 @@ function setSelectOptionsForKind(kind) {
   formatSelect.disabled = false;
 }
 
-/* ===================== FFmpeg (fix Worker + preload) ===================== */
+function showQualityIfNeeded(kind, outExt) {
+  qualityWrap.hidden = !(kind === "image" && (outExt === "jpg" || outExt === "webp"));
+}
+
+/* ===================== FFmpeg (LOCAL ONLY) ===================== */
 function warmupFFmpeg() {
   if (ffmpegLoaded || ffmpegLoading) return;
   ffmpegHint.textContent = "Menyiapkan FFmpeg (preload)…";
-  const run = () => ensureFFmpeg().catch(() => {});
+  const run = () => ensureFFmpeg().catch((e) => {
+    ffmpegHint.textContent = e?.message || String(e);
+  });
   if ("requestIdleCallback" in window) requestIdleCallback(run, { timeout: 1200 });
   else setTimeout(run, 200);
 }
@@ -252,6 +231,18 @@ async function ensureFFmpeg() {
     ffmpegHint.textContent = "Menyiapkan FFmpeg…";
     setProgress(5, "Menyiapkan FFmpeg…");
 
+    const okW = await urlOk(LOCAL_ASSETS.classWorkerURL);
+    const okC = await urlOk(LOCAL_ASSETS.coreURL);
+    const okM = await urlOk(LOCAL_ASSETS.wasmURL);
+
+    if (!okW || !okC || !okM) {
+      throw new Error(
+        "FFmpeg asset belum ada di Vercel (same-origin). " +
+        "Taruh file ini di ROOT /public lalu redeploy: " +
+        "ffmpeg-worker.js, ffmpeg-core.js, ffmpeg-core.wasm"
+      );
+    }
+
     ffmpeg = new FFmpeg();
 
     try {
@@ -261,37 +252,14 @@ async function ensureFFmpeg() {
       });
     } catch {}
 
-    // 1) local (paling cepat & stabil)
-    const hasLocalClassWorker = await urlOk(LOCAL.classWorkerURL);
-    const hasLocalCore = await urlOk(LOCAL.coreURL) && await urlOk(LOCAL.wasmURL);
-
-    if (hasLocalClassWorker && hasLocalCore) {
-      ffmpegHint.textContent = "FFmpeg: local assets (fast).";
-      await ffmpeg.load({
-        classWorkerURL: LOCAL.classWorkerURL,
-        coreURL: LOCAL.coreURL,
-        wasmURL: LOCAL.wasmURL,
-        workerURL: (await urlOk(LOCAL.workerURL)) ? LOCAL.workerURL : undefined,
-      });
-      ffmpegLoaded = true;
-      ffmpegHint.textContent = "FFmpeg siap (local).";
-      return ffmpeg;
-    }
-
-    // 2) fallback CDN blob
-    ffmpegHint.textContent = "FFmpeg: CDN fallback (blob)…";
-    const classWorkerBlob = await toBlobURL(`${CDN.ffmpegPkgBase}/worker.js`, "text/javascript");
-    const coreBlob = await toBlobURL(`${CDN.coreBaseUmd}/ffmpeg-core.js`, "text/javascript");
-    const wasmBlob = await toBlobURL(`${CDN.coreBaseUmd}/ffmpeg-core.wasm`, "application/wasm");
-
     await ffmpeg.load({
-      classWorkerURL: classWorkerBlob,
-      coreURL: coreBlob,
-      wasmURL: wasmBlob,
+      classWorkerURL: LOCAL_ASSETS.classWorkerURL,
+      coreURL: LOCAL_ASSETS.coreURL,
+      wasmURL: LOCAL_ASSETS.wasmURL,
     });
 
     ffmpegLoaded = true;
-    ffmpegHint.textContent = "FFmpeg siap (CDN blob).";
+    ffmpegHint.textContent = "FFmpeg siap.";
     return ffmpeg;
   })();
 
@@ -299,25 +267,25 @@ async function ensureFFmpeg() {
 }
 
 /* ===================== CONVERTERS ===================== */
-function showQualityIfNeeded(kind, outExt) {
-  // quality slider hanya relevan untuk jpg/webp output gambar
-  qualityWrap.hidden = !(kind === "image" && (outExt === "jpg" || outExt === "webp"));
+async function convertTextLike(file) {
+  const buf = await file.arrayBuffer();
+  return { blob: new Blob([buf], { type: "text/plain" }), mime: "text/plain", note: "DOC/DOCX/PDF/PS/EPS butuh backend untuk convert." };
 }
 
-async function convertTextLike(file) {
-  // hanya untuk txt/text: download ulang isinya (no “convert”)
-  const buf = await file.arrayBuffer();
-  const blob = new Blob([buf], { type: "text/plain" });
-  return { blob, mime: "text/plain", note: "Dokumen non-TXT (DOC/DOCX/PDF/PS/EPS) butuh backend untuk convert." };
+// Fast path untuk png/jpg/webp kalau browser bisa decode (lebih cepat)
+function shouldUseCanvasFastPath(inExt, outExt) {
+  const decodable = new Set(["png","jpg","jpeg","webp","bmp","gif","svg"]);
+  const outOk = new Set(["png","jpg","webp"]);
+  return decodable.has(inExt) && outOk.has(outExt);
 }
 
 async function convertImageFastCanvas(file, outExt) {
-  // fast path: hanya kalau browser bisa decode + output jpg/png/webp
   const q = Math.max(0.5, Math.min(1, Number(quality.value) / 100));
   const mime =
     outExt === "jpg" ? "image/jpeg" :
     outExt === "png" ? "image/png" :
     outExt === "webp" ? "image/webp" : null;
+
   if (!mime) throw new Error("Canvas fast path hanya untuk PNG/JPG/WebP.");
 
   const bmp = await createImageBitmap(file);
@@ -335,172 +303,201 @@ async function convertImageFastCanvas(file, outExt) {
       (mime === "image/jpeg" || mime === "image/webp") ? q : undefined
     );
   });
+
   return { blob, mime };
 }
 
-function shouldUseCanvasFastPath(inExt, outExt) {
-  // fast & ringan untuk input yang umumnya bisa didecode browser
-  const decodable = new Set(["png","jpg","jpeg","webp","bmp","gif","svg"]);
-  const outOk = new Set(["png","jpg","webp"]);
-  return decodable.has(inExt) && outOk.has(outExt);
-}
-
-async function convertWithFFmpeg(file, kind, outExt) {
+async function convertImageFFmpeg(file, outExt) {
   const ff = await ensureFFmpeg();
 
   const inExt = extOf(file.name) || "bin";
   const inName = `input.${inExt}`;
   const outName = `output.${outExt}`;
 
+  // EPS/PS/ODD: biasanya butuh Ghostscript (tidak ada)
+  if (inExt === "eps" || inExt === "ps" || inExt === "odd") {
+    throw new Error(`Format ${inExt.toUpperCase()} butuh engine tambahan (Ghostscript).`);
+  }
+  // output svg dari raster = vectorize (tidak ada)
+  if (outExt === "svg") {
+    throw new Error("Output SVG dari raster tidak didukung (butuh vectorize).");
+  }
+
+  await ff.writeFile(inName, await fetchFile(file));
+
+  if (outExt === "ico") {
+    await ff.exec([
+      "-hide_banner","-loglevel","error",
+      "-i", inName,
+      "-vf","scale=256:256:",
+      "-f","ico",
+      outName
+    ]);
+  } else {
+    await ff.exec(["-hide_banner","-loglevel","error","-i", inName, outName]);
+  }
+
+  const data = await ff.readFile(outName);
+
+  try { await ff.deleteFile?.(inName); } catch {}
+  try { await ff.deleteFile?.(outName); } catch {}
+
+  const mimeMap = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+    bmp: "image/bmp",
+    tiff: "image/tiff",
+    tga: "image/x-tga",
+    ico: "image/x-icon",
+  };
+  const mime = mimeMap[outExt] || "application/octet-stream";
+  return { blob: new Blob([data], { type: mime }), mime };
+}
+
+// Video/Audio -> Audio (MP3 auto fallback)
+async function convertMediaToAudio(file, outExt) {
+  const ff = await ensureFFmpeg();
+
+  const inExt = extOf(file.name) || "bin";
+  const inName = `input.${inExt}`;
+
   setProgress(12, `Menulis file ke FFmpeg… (${file.name})`);
   await ff.writeFile(inName, await fetchFile(file));
 
-  setProgress(18, `Converting… (${outExt.toUpperCase()})`);
+  // Capture log untuk diagnosa
+  const logs = [];
+  const onLog = ({ message }) => {
+    logs.push(message);
+    if (logs.length > 120) logs.shift();
+  };
+  try { ff.on("log", onLog); } catch {}
 
-  // ===== IMAGE =====
-  if (kind === "image") {
-    // EPS/ODD/PS tricky: kemungkinan besar tidak bisa tanpa Ghostscript (tidak ada di build).
-    if (inExt === "eps" || inExt === "ps" || inExt === "odd") {
-      throw new Error(`Format ${inExt.toUpperCase()} butuh engine tambahan (Ghostscript). Tidak bisa full client-side.`);
-    }
+  const commonIn = ["-hide_banner","-loglevel","error","-i", inName, "-map","0:a:0?", "-vn","-sn","-dn"];
 
-    // SVG -> raster ok; raster -> SVG tidak (vectorize)
-    if (outExt === "svg") {
-      throw new Error("Output SVG dari raster tidak didukung (butuh vectorize).");
-    }
-
-    // Convert image -> image (best effort)
-    // Tambahan: kalau output ico, biasanya butuh resize. Kita buat 256px sebagai default.
-    if (outExt === "ico") {
-      await ff.exec([
-        "-hide_banner","-loglevel","error",
-        "-i", inName,
-        "-vf", "scale=256:256:force_original_aspect_ratio=decrease",
-        "-f","ico",
-        outName
-      ]);
-    } else {
-      await ff.exec([
-        "-hide_banner","-loglevel","error",
-        "-i", inName,
-        outName
-      ]);
-    }
-
-    const data = await ff.readFile(outName);
-
-    try { await ff.deleteFile?.(inName); } catch {}
-    try { await ff.deleteFile?.(outName); } catch {}
-
-    const mimeMap = {
-      png: "image/png",
-      jpg: "image/jpeg",
-      webp: "image/webp",
-      gif: "image/gif",
-      bmp: "image/bmp",
-      tiff: "image/tiff",
-      tga: "image/x-tga",
-      ico: "image/x-icon",
-    };
-    const mime = mimeMap[outExt] || "application/octet-stream";
-    return { blob: new Blob([data], { type: mime }), mime };
-  }
-
-  // ===== VIDEO/AUDIO -> AUDIO =====
-  if (kind === "video" || kind === "audio") {
-    // percepat audio-only:
-    // -map 0:a:0? (ambil audio track pertama)
-    // -vn -sn -dn (matikan video/sub/data)
-    // mp3: CBR 128k (lebih cepat)
-    const commonIn = ["-hide_banner","-loglevel","error","-i", inName, "-map","0:a:0?", "-vn","-sn","-dn"];
-
-    if (outExt === "mp3") {
-      await ff.exec([...commonIn, "-ac","2","-ar","44100", "-c:a","libmp3lame","-b:a","128k", outName]);
-    } else if (outExt === "wav") {
-      await ff.exec([...commonIn, "-ac","2","-ar","44100", "-c:a","pcm_s16le", outName]);
-    } else if (outExt === "flac") {
-      await ff.exec([...commonIn, "-c:a","flac", outName]);
-    } else if (outExt === "ogg") {
-      // Opus kalau ada, fallback vorbis tetap jalan tergantung build
-      // coba opus dulu
-      try {
-        await ff.exec([...commonIn, "-c:a","libopus", "-b:a","128k", outName]);
-      } catch {
-        await ff.exec([...commonIn, "-c:a","libvorbis", "-q:a","4", outName]);
+  // list try sesuai pilihan
+  const tries = [];
+  if (outExt === "mp3") {
+    tries.push({
+      ext: "mp3", mime: "audio/mpeg",
+      run: async (outName) => ff.exec([...commonIn, "-ac","2","-ar","44100","-c:a","libmp3lame","-b:a","128k", outName])
+    });
+    tries.push({
+      ext: "m4a", mime: "audio/mp4",
+      run: async (outName) => ff.exec([...commonIn, "-c:a","aac","-b:a","192k","-f","ipod", outName])
+    });
+    tries.push({
+      ext: "ogg", mime: "audio/ogg",
+      run: async (outName) => {
+        try {
+          await ff.exec([...commonIn, "-c:a","libopus","-b:a","128k", outName]);
+        } catch {
+          await ff.exec([...commonIn, "-c:a","libvorbis","-q:a","4", outName]);
+        }
       }
-    } else if (outExt === "m4a") {
-      // AAC in MP4/M4A container
-      await ff.exec([...commonIn, "-c:a","aac", "-b:a","192k", "-f","ipod", outName]);
-    } else if (outExt === "alac") {
-      await ff.exec([...commonIn, "-c:a","alac", "-f","ipod", outName]);
-    } else if (outExt === "aiff") {
-      await ff.exec([...commonIn, "-c:a","pcm_s16be", outName]);
-    } else if (outExt === "amr") {
-      // best-effort (butuh encoder amr_nb; bisa saja tidak ada di build)
-      await ff.exec([...commonIn, "-ar","8000", "-ac","1", "-c:a","amr_nb", outName]);
-    } else if (outExt === "aac") {
-      await ff.exec([...commonIn, "-c:a","aac", "-b:a","192k", outName]);
-    } else {
-      throw new Error(`Output audio ${outExt.toUpperCase()} belum diset.`);
-    }
-
-    const data = await ff.readFile(outName);
-
-    try { await ff.deleteFile?.(inName); } catch {}
-    try { await ff.deleteFile?.(outName); } catch {}
-
-    const mimeMap = {
-      mp3: "audio/mpeg",
-      wav: "audio/wav",
-      flac: "audio/flac",
-      ogg: "audio/ogg",
-      m4a: "audio/mp4",
-      alac: "audio/mp4",
-      aiff: "audio/aiff",
-      amr: "audio/amr",
-      aac: "audio/aac",
-    };
-    const mime = mimeMap[outExt] || "application/octet-stream";
-    return { blob: new Blob([data], { type: mime }), mime };
+    });
+  } else if (outExt === "wav") {
+    tries.push({
+      ext: "wav", mime: "audio/wav",
+      run: async (outName) => ff.exec([...commonIn, "-ac","2","-ar","44100","-c:a","pcm_s16le", outName])
+    });
+  } else if (outExt === "m4a") {
+    tries.push({
+      ext: "m4a", mime: "audio/mp4",
+      run: async (outName) => ff.exec([...commonIn, "-c:a","aac","-b:a","192k","-f","ipod", outName])
+    });
+  } else if (outExt === "ogg") {
+    tries.push({
+      ext: "ogg", mime: "audio/ogg",
+      run: async (outName) => {
+        try {
+          await ff.exec([...commonIn, "-c:a","libopus","-b:a","128k", outName]);
+        } catch {
+          await ff.exec([...commonIn, "-c:a","libvorbis","-q:a","4", outName]);
+        }
+      }
+    });
+  } else if (outExt === "flac") {
+    tries.push({
+      ext: "flac", mime: "audio/flac",
+      run: async (outName) => ff.exec([...commonIn, "-c:a","flac", outName])
+    });
+  } else if (outExt === "alac") {
+    tries.push({
+      ext: "m4a", mime: "audio/mp4",
+      run: async (outName) => ff.exec([...commonIn, "-c:a","alac","-f","ipod", outName])
+    });
+  } else if (outExt === "aiff") {
+    tries.push({
+      ext: "aiff", mime: "audio/aiff",
+      run: async (outName) => ff.exec([...commonIn, "-c:a","pcm_s16be", outName])
+    });
+  } else if (outExt === "amr") {
+    tries.push({
+      ext: "amr", mime: "audio/amr",
+      run: async (outName) => ff.exec([...commonIn, "-ar","8000","-ac","1","-c:a","amr_nb", outName])
+    });
+  } else {
+    throw new Error("Output audio belum diset.");
   }
 
-  throw new Error("Kind tidak didukung untuk FFmpeg convert.");
+  try {
+    for (const t of tries) {
+      const outName = `output.${t.ext}`;
+      setProgress(18, `Converting → ${t.ext.toUpperCase()}…`);
+      await t.run(outName);
+
+      const data = await ff.readFile(outName);
+      if (!data || data.length === 0) {
+        throw new Error("Video tidak punya audio track (hasil kosong).");
+      }
+
+      // cleanup
+      try { await ff.deleteFile?.(outName); } catch {}
+      try { await ff.deleteFile?.(inName); } catch {}
+      try { ff.off?.("log", onLog); } catch {}
+
+      return { blob: new Blob([data], { type: t.mime }), mime: t.mime, actualExt: t.ext };
+    }
+
+    throw new Error("Semua encoder gagal (mp3/m4a/ogg).");
+  } catch (err) {
+    const tail = logs.slice(-30).join("\n");
+    try { await ff.deleteFile?.(inName); } catch {}
+    try { ff.off?.("log", onLog); } catch {}
+    throw new Error(`${err?.message || err}\n\nFFmpeg log (tail):\n${tail}`);
+  }
 }
 
 async function convertOne(file, kind, outExt) {
   const inExt = extOf(file.name);
 
-  // DOC/DOCX/PDF/PS/EPS: tidak bisa full tanpa backend
   if (kind === "doc") {
     if (inExt === "txt" || inExt === "text") {
-      if (outExt !== "txt") throw new Error("TXT/TEXT hanya support output TXT.");
+      if (outExt !== "txt") throw new Error("TXT/TEXT hanya bisa output TXT.");
       return await convertTextLike(file);
     }
-    throw new Error("DOC/DOCX/PDF/PS/EPS/WORD butuh backend untuk convert. (client-side saja tidak cukup)");
+    throw new Error("DOC/DOCX/PDF/PS/EPS/WORD butuh backend untuk convert.");
   }
 
   if (kind === "image") {
     showQualityIfNeeded(kind, outExt);
-
-    // canvas fast path untuk cepat
     if (shouldUseCanvasFastPath(inExt, outExt)) {
-      try {
-        return await convertImageFastCanvas(file, outExt);
-      } catch {
-        // fallback ke ffmpeg
-      }
+      try { return await convertImageFastCanvas(file, outExt); }
+      catch { /* fallback */ }
     }
-    return await convertWithFFmpeg(file, kind, outExt);
+    return await convertImageFFmpeg(file, outExt);
   }
 
   if (kind === "video" || kind === "audio") {
-    return await convertWithFFmpeg(file, kind, outExt);
+    return await convertMediaToAudio(file, outExt);
   }
 
   throw new Error("Format file tidak dikenali.");
 }
 
-/* ===================== FLOW ===================== */
+/* ===================== UI FLOW ===================== */
 function clearAll() {
   queue = [];
   results.innerHTML = "";
@@ -520,17 +517,16 @@ clearBtn.addEventListener("click", () => {
 });
 
 formatSelect.addEventListener("change", () => {
-  const kind = queue[0]?.kind;
+  const firstKind = queue[0]?.kind;
   const outExt = formatSelect.value;
-  if (kind) showQualityIfNeeded(kind, outExt);
-  if ((kind === "video" || kind === "audio" || kind === "image") && outExt) warmupFFmpeg();
+  if (firstKind) showQualityIfNeeded(firstKind, outExt);
+  if (firstKind === "image" || firstKind === "video" || firstKind === "audio") warmupFFmpeg();
 });
 
-async function convertAll() {
+convertBtn.addEventListener("click", async () => {
   if (converting) return;
   if (!queue.length) return;
 
-  // NOTE: Untuk sederhana: output format yang sama untuk semua file di batch.
   const outExt = formatSelect.value;
   if (!outExt) return;
 
@@ -544,29 +540,30 @@ async function convertAll() {
   try {
     for (const item of queue) {
       done++;
-      const file = item.file;
-      const kind = item.kind;
+      const { file, kind } = item;
       const label = `${done}/${total}`;
 
       const customBase = nameInput.value.trim();
-      const outName = `${customBase ? customBase : baseName(file.name)}.${outExt}`;
+      const base = customBase ? customBase : baseName(file.name);
 
       setProgress(Math.round(((done - 1) / total) * 100), `Memproses ${label}: ${file.name}`);
 
       try {
         const out = await convertOne(file, kind, outExt);
 
+        const finalExt = out.actualExt || outExt;
+        const finalName = `${base}.${finalExt}`;
+
         addResultCard({
-          outName,
+          outName: finalName,
           blob: out.blob,
           kind: out.blob.type,
           originalName: file.name,
-          note: out.note || ""
+          note: out.note || (finalExt !== outExt ? `Fallback output: ${finalExt.toUpperCase()}` : "")
         });
 
         setProgress(Math.round((done / total) * 100), `Selesai ${label}: ${file.name}`);
       } catch (e) {
-        // tampilkan error per file jadi user tahu mana yang gagal
         addResultCard({
           outName: `FAILED_${file.name}.txt`,
           blob: new Blob([`GAGAL: ${file.name}\n\n${e?.message || e}`], { type: "text/plain" }),
@@ -583,9 +580,7 @@ async function convertAll() {
     convertBtn.disabled = queue.length === 0 || !formatSelect.value;
     clearBtn.disabled = queue.length === 0;
   }
-}
-
-convertBtn.addEventListener("click", convertAll);
+});
 
 // Drag-drop
 dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
@@ -609,9 +604,7 @@ function handleFiles(files) {
     else accepted.push(f);
   }
 
-  // simple mode: batch file boleh campur, tapi output dropdown mengikuti file pertama
-  queue = accepted.map((file) => ({ file, kind: detectKind(file) }));
-
+  queue = accepted.map(file => ({ file, kind: detectKind(file) }));
   results.innerHTML = "";
 
   if (!queue.length) {
@@ -621,15 +614,14 @@ function handleFiles(files) {
     clearBtn.disabled = true;
     formatSelect.innerHTML = `<option value="">Pilih file dulu…</option>`;
     formatSelect.disabled = true;
-    ffmpegHint.textContent = rejected.length ? `Ditolak karena >1GB: ${rejected[0].name}` : "";
+    ffmpegHint.textContent = rejected.length ? `Ditolak (>1GB): ${rejected[0].name}` : "";
     return;
   }
 
-  // set format options based on first file kind
   const firstKind = queue[0].kind;
   setSelectOptionsForKind(firstKind);
 
-  // auto select default
+  // default output
   if (firstKind === "image") formatSelect.value = "jpg";
   else if (firstKind === "video" || firstKind === "audio") formatSelect.value = "mp3";
   else if (firstKind === "doc") formatSelect.value = "txt";
@@ -652,10 +644,8 @@ function handleFiles(files) {
     ffmpegHint.textContent = "";
   }
 
-  // Warmup ffmpeg kalau butuh
-  if (firstKind === "image" || firstKind === "video" || firstKind === "audio") {
-    warmupFFmpeg();
-  }
+  // preload ffmpeg kalau perlu
+  if (firstKind === "image" || firstKind === "video" || firstKind === "audio") warmupFFmpeg();
 }
 
 clearAll();
