@@ -22,11 +22,14 @@ quality.addEventListener("input", () => (qualityVal.textContent = quality.value)
 const MAX_FILE_BYTES = 1024 * 1024 * 1024; // 1GB per file
 
 // WAJIB: taruh file ini di ROOT /public (same-origin)
+const ORIGIN = window.location.origin;
+
 const LOCAL_ASSETS = {
-  classWorkerURL: "/ffmpeg-worker.js",
-  coreURL: "/ffmpeg-core.js",
-  wasmURL: "/ffmpeg-core.wasm",
+  classWorkerURL: `${ORIGIN}/ffmpeg-worker.js`,
+  coreURL: `${ORIGIN}/ffmpeg-core.js`,
+  wasmURL: `${ORIGIN}/ffmpeg-core.wasm`,
 };
+
 
 // List deteksi ekstensi (sesuai permintaan kamu)
 const IMG_EXT = new Set(["bmp","eps","gif","ico","jpeg","jpg","odd","png","psd","svg","tga","tiff","webp"]);
@@ -649,3 +652,4 @@ function handleFiles(files) {
 }
 
 clearAll();
+
