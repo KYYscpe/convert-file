@@ -267,3 +267,27 @@ a.dl{
   padding: 6px 4px 0;
   text-align:center;
 }
+
+/* Paksa komponen native ikut tema gelap */
+:root{
+  color-scheme: dark;
+}
+
+/* Select utama */
+.control select{
+  background: rgba(10, 12, 20, .92);
+  color: rgba(255,255,255,.92);
+  border: 1px solid rgba(255,255,255,.14);
+}
+
+/* Dropdown list items (option) */
+.control select option{
+  background: #0b1020;   /* gelap */
+  color: rgba(255,255,255,.92);
+}
+
+/* (opsional) saat hover/selected di beberapa browser */
+.control select option:checked{
+  background: #162042;
+  color: rgba(255,255,255,.95);
+}
