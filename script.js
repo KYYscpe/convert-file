@@ -30,6 +30,13 @@ const LOCAL_ASSETS = {
   wasmURL: `${ORIGIN}/ffmpeg-core.wasm`,
 };
 
+// preload segera saat halaman load
+window.addEventListener("load", () => {
+  // mulai loading FFmpeg diam-diam
+  ensureFFmpeg().catch(() => {});
+});
+
+
 
 // List deteksi ekstensi (sesuai permintaan kamu)
 const IMG_EXT = new Set(["bmp","eps","gif","ico","jpeg","jpg","odd","png","psd","svg","tga","tiff","webp"]);
@@ -652,4 +659,5 @@ function handleFiles(files) {
 }
 
 clearAll();
+
 
