@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>File Converter — PNG/JPG/WEBP, MP4→MP3</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="bg"></div>
+
+  <header class="top">
+    <div class="brand">
+      <div class="logo">↻</div>
+      <div>
+        <div class="title">File Converter</div>
+        <div class="subtitle">Convert cepat, tanpa upload server (langsung di browser)</div>
+      </div>
+    </div>
+    <div class="badge" id="privacyBadge">Local-only</div>
+  </header>
+
+  <main class="wrap">
+    <section class="card">
+      <div class="card-head">
+        <h1>Convert file</h1>
+        <p class="muted">
+          Gambar (PNG/JPG/WEBP) pakai Canvas. Video/audio pakai FFmpeg.wasm (akan download core saat dibutuhkan).
+        </p>
+      </div>
+
+      <div class="drop" id="dropzone">
+        <input id="fileInput" type="file" multiple />
+        <div class="drop-inner">
+          <div class="drop-icon">📁</div>
+          <div class="drop-text">
+            <div class="drop-title">Drag & drop file di sini</div>
+            <div class="drop-sub">atau klik untuk pilih file (bisa multi-file)</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="control">
+          <label>Output format</label>
+          <select id="formatSelect" disabled>
+            <option value="">Pilih file dulu…</option>
+          </select>
+        </div>
+
+        <div class="control" id="qualityWrap" hidden>
+          <label>Quality (JPG/WEBP)</label>
+          <input id="quality" type="range" min="50" max="100" value="92" />
+          <div class="hint"><span id="qualityVal">92</span>%</div>
+        </div>
+
+        <div class="control">
+          <label>Nama output</label>
+          <input id="nameInput" type="text" placeholder="auto (pakai nama file asli)" />
+          <div class="hint">Kalau kosong, otomatis pakai nama file + ekstensi baru.</div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="convertBtn" class="btn" disabled>Convert</button>
+        <button id="clearBtn" class="btn ghost" disabled>Clear</button>
+      </div>
+
+      <div class="status">
+        <div class="bar">
+          <div class="bar-fill" id="barFill"></div>
+        </div>
+        <div class="status-row">
+          <div id="statusText" class="muted">Belum ada file.</div>
+          <div id="ffmpegHint" class="muted small"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Hasil</h2>
+        <p class="muted">File hasil akan muncul di bawah. Klik Download.</p>
+      </div>
+      <div id="results" class="results"></div>
+    </section>
+
+    <footer class="foot muted small">
+      Tips: Kalau convert video berat/lemot, coba file lebih kecil dulu. Browser tab jangan ditutup saat proses.
+    </footer>
+  </main>
+
+  <script type="module" src="script.js"></script>
+</body>
+</html>
