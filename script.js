@@ -1,6 +1,3 @@
-// Updated for Vercel: prefer SAME-ORIGIN core files (fast + no CORS),
-// fallback to jsDelivr + toBlobURL (bypass CORS) like official usage docs. :contentReference[oaicite:1]{index=1}
-
 import { FFmpeg } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js";
 import { fetchFile, toBlobURL } from "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js";
 
@@ -23,20 +20,26 @@ quality.addEventListener("input", () => (qualityVal.textContent = quality.value)
 let queue = [];
 let converting = false;
 
-// FFmpeg loader (lazy)
 let ffmpeg = null;
 let ffmpegLoaded = false;
 let ffmpegLoading = null;
 
-// Core sources
-const CORE_LOCAL = {
+// ====== URLs (LOCAL first = fastest & no CORS) ======
+const LOCAL = {
+  // worker milik package @ffmpeg/ffmpeg (class worker)
+  classWorkerURL: "/ffmpeg-worker.js",
+  // core (single thread)
   coreURL: "/ffmpeg-core.js",
   wasmURL: "/ffmpeg-core.wasm",
+  // optional (dipakai mt; tapi aman disediakan kalau kamu taruh)
   workerURL: "/ffmpeg-core.worker.js",
 };
 
-// Official base used in docs (single-thread core). :contentReference[oaicite:2]{index=2}
-const CORE_CDN_BASE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
+// ====== CDN fallback (blobify -> worker jadi same-origin Blob URL) ======
+const CDN = {
+  ffmpegPkgBase: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm",
+  coreBaseUmd: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd",
+};
 
 function setProgress(pct, text = "") {
   const v = Math.max(0, Math.min(100, pct));
@@ -46,8 +49,7 @@ function setProgress(pct, text = "") {
 
 function fmtBytes(bytes) {
   const units = ["B", "KB", "MB", "GB"];
-  let v = bytes;
-  let i = 0;
+  let v = bytes, i = 0;
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
   return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
@@ -62,7 +64,7 @@ function baseName(name) {
 }
 
 function isImage(file) {
-  return file.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp"].includes(extOf(file.name));
+  return file.type.startsWith("image/") || ["png","jpg","jpeg","webp"].includes(extOf(file.name));
 }
 
 function isVideoOrAudio(file) {
@@ -73,8 +75,8 @@ function isVideoOrAudio(file) {
 function buildFormatOptions(files) {
   const hasImage = files.some(isImage);
   const hasMedia = files.some(isVideoOrAudio);
-
   const opts = [];
+
   if (hasImage) {
     opts.push({ value: "png", label: "PNG (image/png)" });
     opts.push({ value: "jpg", label: "JPG (image/jpeg)" });
@@ -112,31 +114,26 @@ function showQualityIfNeeded(format) {
 
 formatSelect.addEventListener("change", () => {
   showQualityIfNeeded(formatSelect.value);
-
-  // Warmup ffmpeg if user memilih mp3/wav
-  if (["mp3","wav"].includes(formatSelect.value) && queue.some(isVideoOrAudio)) {
-    warmupFFmpeg();
-  }
+  if (["mp3","wav"].includes(formatSelect.value) && queue.some(isVideoOrAudio)) warmupFFmpeg();
 });
 
 async function urlOk(url) {
   try {
-    // same-origin check; if file doesn't exist => 404 => false
     const r = await fetch(url, { method: "GET", cache: "no-store" });
     return r.ok;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
+// preload supaya "Menyiapkan FFmpeg..." lebih cepat
 function warmupFFmpeg() {
   if (ffmpegLoaded || ffmpegLoading) return;
   ffmpegHint.textContent = "Menyiapkan FFmpeg (preload)…";
   const run = () => ensureFFmpeg().catch(() => {});
-  if ("requestIdleCallback" in window) requestIdleCallback(run, { timeout: 1500 });
-  else setTimeout(run, 250);
+  if ("requestIdleCallback" in window) requestIdleCallback(run, { timeout: 1200 });
+  else setTimeout(run, 200);
 }
 
+// KUNCI FIX: set classWorkerURL agar Worker tidak cross-origin. :contentReference[oaicite:2]{index=2}
 async function ensureFFmpeg() {
   if (ffmpegLoaded) return ffmpeg;
   if (ffmpegLoading) return ffmpegLoading;
@@ -147,7 +144,6 @@ async function ensureFFmpeg() {
 
     ffmpeg = new FFmpeg();
 
-    // progress (best-effort)
     try {
       ffmpeg.on("progress", ({ progress }) => {
         const pct = 8 + Math.round(progress * 85);
@@ -155,37 +151,45 @@ async function ensureFFmpeg() {
       });
     } catch {}
 
-    // 1) Prefer SAME-ORIGIN core files (paling cepat & stabil di Vercel)
-    const hasLocalCore = await urlOk(CORE_LOCAL.coreURL) && await urlOk(CORE_LOCAL.wasmURL);
-    if (hasLocalCore) {
-      ffmpegHint.textContent = "FFmpeg core: local (same-origin).";
+    // 1) LOCAL (recommended for Vercel): /ffmpeg-worker.js + /ffmpeg-core.*
+    const hasLocalClassWorker = await urlOk(LOCAL.classWorkerURL);
+    const hasLocalCore = await urlOk(LOCAL.coreURL) && await urlOk(LOCAL.wasmURL);
+
+    if (hasLocalClassWorker && hasLocalCore) {
+      ffmpegHint.textContent = "FFmpeg: local assets (paling cepat).";
       await ffmpeg.load({
-        coreURL: CORE_LOCAL.coreURL,
-        wasmURL: CORE_LOCAL.wasmURL,
-        workerURL: CORE_LOCAL.workerURL,
+        classWorkerURL: LOCAL.classWorkerURL, // worker utama ffmpeg :contentReference[oaicite:3]{index=3}
+        coreURL: LOCAL.coreURL,
+        wasmURL: LOCAL.wasmURL,
+        // workerURL opsional (mt). aman kalau ada file-nya
+        workerURL: (await urlOk(LOCAL.workerURL)) ? LOCAL.workerURL : undefined,
       });
       ffmpegLoaded = true;
       ffmpegHint.textContent = "FFmpeg siap (local).";
       return ffmpeg;
     }
 
-    // 2) Fallback: jsDelivr + toBlobURL (bypass CORS) per docs :contentReference[oaicite:3]{index=3}
+    // 2) FALLBACK: blobify CDN worker + blobify core (hindari error Worker cross-origin)
+    ffmpegHint.textContent = "FFmpeg: CDN fallback (blob)…";
     try {
-      ffmpegHint.textContent = "FFmpeg core: CDN (jsDelivr)…";
+      const classWorkerBlob = await toBlobURL(`${CDN.ffmpegPkgBase}/worker.js`, "text/javascript");
+      const coreBlob = await toBlobURL(`${CDN.coreBaseUmd}/ffmpeg-core.js`, "text/javascript");
+      const wasmBlob = await toBlobURL(`${CDN.coreBaseUmd}/ffmpeg-core.wasm`, "application/wasm");
+
       await ffmpeg.load({
-        coreURL: await toBlobURL(`${CORE_CDN_BASE}/ffmpeg-core.js`, "text/javascript"),
-        wasmURL: await toBlobURL(`${CORE_CDN_BASE}/ffmpeg-core.wasm`, "application/wasm"),
-        workerURL: await toBlobURL(`${CORE_CDN_BASE}/ffmpeg-core.worker.js`, "text/javascript"),
+        classWorkerURL: classWorkerBlob, // ini yang memperbaiki error kamu :contentReference[oaicite:4]{index=4}
+        coreURL: coreBlob,
+        wasmURL: wasmBlob,
       });
+
       ffmpegLoaded = true;
-      ffmpegHint.textContent = "FFmpeg siap (CDN).";
+      ffmpegHint.textContent = "FFmpeg siap (CDN blob).";
       return ffmpeg;
     } catch (e) {
-      // Better error message for Vercel users
-      const msg =
-        "Gagal load FFmpeg core (Failed to fetch). " +
-        "Solusi paling stabil di Vercel: taruh ffmpeg-core.js / ffmpeg-core.wasm / ffmpeg-core.worker.js di root project (same-origin), lalu redeploy.";
-      throw new Error(msg);
+      throw new Error(
+        "Gagal load FFmpeg (Failed to fetch / Worker blocked). " +
+        "Solusi paling stabil di Vercel: taruh file ffmpeg-worker.js + ffmpeg-core.js + ffmpeg-core.wasm di root project lalu redeploy."
+      );
     }
   })();
 
@@ -210,9 +214,14 @@ clearBtn.addEventListener("click", () => {
   clearAll();
 });
 
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+  }[c]));
+}
+
 function addResultCard({ outName, blob, kind, originalName }) {
   const url = URL.createObjectURL(blob);
-
   const div = document.createElement("div");
   div.className = "item";
 
@@ -248,11 +257,6 @@ function addResultCard({ outName, blob, kind, originalName }) {
     img.src = url;
     img.alt = outName;
     preview.appendChild(img);
-  } else if (blob.type.startsWith("video/")) {
-    const v = document.createElement("video");
-    v.src = url;
-    v.controls = true;
-    preview.appendChild(v);
   } else if (blob.type.startsWith("audio/")) {
     const au = document.createElement("audio");
     au.src = url;
@@ -269,18 +273,12 @@ function addResultCard({ outName, blob, kind, originalName }) {
   results.prepend(div);
 }
 
-function escapeHtml(s) {
-  return (s || "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
-  }[c]));
-}
-
 async function convertImage(file, outExt) {
   const q = Math.max(0.5, Math.min(1, Number(quality.value) / 100));
-  const mime = outExt === "jpg" ? "image/jpeg"
-            : outExt === "png" ? "image/png"
-            : outExt === "webp" ? "image/webp"
-            : null;
+  const mime =
+    outExt === "jpg" ? "image/jpeg" :
+    outExt === "png" ? "image/png" :
+    outExt === "webp" ? "image/webp" : null;
 
   if (!mime) throw new Error("Format image tidak didukung.");
 
@@ -325,7 +323,6 @@ async function convertMediaToAudio(file, outExt) {
 
   const data = await ff.readFile(outName);
 
-  // cleanup best-effort
   try { await ff.deleteFile?.(inName); } catch {}
   try { await ff.deleteFile?.(outName); } catch {}
 
@@ -376,12 +373,8 @@ async function convertAll() {
       setProgress(Math.round(((done - 1) / total) * 100), `Memproses ${label}: ${file.name}`);
 
       let out;
-      if (isImage(file)) {
-        out = await convertImage(file, outExt);
-      } else {
-        ffmpegHint.textContent = "FFmpeg dipakai untuk media. Kalau gagal fetch, pakai core local (lihat catatan).";
-        out = await convertMediaToAudio(file, outExt);
-      }
+      if (isImage(file)) out = await convertImage(file, outExt);
+      else out = await convertMediaToAudio(file, outExt);
 
       addResultCard({
         outName,
@@ -392,7 +385,6 @@ async function convertAll() {
 
       setProgress(Math.round((done / total) * 100), `Selesai ${label}: ${file.name}`);
     }
-
     setProgress(100, `Selesai semua (${total} file).`);
   } catch (err) {
     console.error(err);
@@ -407,26 +399,18 @@ async function convertAll() {
 convertBtn.addEventListener("click", convertAll);
 
 // Drag-drop UI
-dropzone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  dropzone.classList.add("dragover");
-});
+dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
 dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
 dropzone.addEventListener("drop", (e) => {
   e.preventDefault();
   dropzone.classList.remove("dragover");
-  const files = [...(e.dataTransfer?.files || [])];
-  handleFiles(files);
+  handleFiles([...(e.dataTransfer?.files || [])]);
 });
 
-fileInput.addEventListener("change", () => {
-  const files = [...fileInput.files];
-  handleFiles(files);
-});
+fileInput.addEventListener("change", () => handleFiles([...(fileInput.files || [])]));
 
 function handleFiles(files) {
   if (!files.length) return;
-
   queue = files.filter(f => f && f.size > 0);
 
   const opts = buildFormatOptions(queue);
@@ -439,7 +423,6 @@ function handleFiles(files) {
     const auto = imgCount >= medCount
       ? (opts.find(o => o.value === "jpg") || opts[0])
       : (opts.find(o => o.value === "mp3") || opts[0]);
-
     formatSelect.value = auto.value;
     showQualityIfNeeded(auto.value);
   }
@@ -447,11 +430,9 @@ function handleFiles(files) {
   convertBtn.disabled = !opts.length;
   clearBtn.disabled = false;
 
-  const list = queue.map(f => `${f.name} (${fmtBytes(f.size)})`).join(" • ");
-  statusText.textContent = `Siap: ${queue.length} file — ${list}`;
+  statusText.textContent = `Siap: ${queue.length} file`;
   setProgress(0);
 
-  // Warmup: kalau ada media, mulai preload FFmpeg diam-diam (biar "Menyiapkan" lebih cepat pas convert)
   if (queue.some(isVideoOrAudio)) {
     ffmpegHint.textContent = "Media terdeteksi. Preload FFmpeg…";
     warmupFFmpeg();
@@ -460,5 +441,4 @@ function handleFiles(files) {
   }
 }
 
-// Init
 clearAll();
